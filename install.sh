@@ -7,7 +7,7 @@ COL_GREEN=$ESC_SEQ"32;01m"
 COL_YELLOW=$ESC_SEQ"33;01m"
 
 if [ $EUID -ne 0 ];
-  then echo "Please run as root"
+  then echo "Please run as root using the sudo command before proceeding."
   exit
 fi
 
@@ -24,28 +24,61 @@ function error_check {
     fi
 }
 
+clear
 
-echo "You are about to install and configure Postfix virtual system with imap support (via Dovecot)."
-echo "This script was made for Debian 7, but will probably also work for other distributions after minor changes."
+echo "You are about to install fws-mail, a virtual mail system built on Postfix with stmp via Dovecot"
+echo "This script was made for Ubuntu 18.04, but may also work for other distributions after minor changes."
+
+echo "Disabling AppArmor"
+service apparmor stop
+update-rc.d -f apparmor remove 
+apt-get remove -y apparmor apparmor-utils
+error_check
 
 echo "Updating system"
-apt-get update
-apt-get upgrade
+apt-get update -y
+apt-get upgrade -y
+apt-get autoremove -y
 
 echo "Adding group:"
 groupadd -g 5000 vmail
 error_check
 
-echo "Adding group:"
+echo "Adding virtual mail daemon user:"
 useradd -u 5000 -g vmail -s /usr/bin/nologin -d /home/vmail -m vmail
 error_check
 
-echo "Installing programs:"
-apt-get install postfix dovecot-core dovecot-imapd postgresql postfix-pgsql dovecot-lmtpd dovecot-pgsql php5-fpm php5-imap php5-pgsql php5-mcrypt php5-intl
+
+echo "Installing http dependencies"
+apt-get -y install apache2 apache2-doc apache2-utils php libapache2-mod-php php-pear php-dev php-fpm php-intl postgresql
 error_check
 
-echo "Preparing database:"
+echo "Installing smtp dependencies"
+DEBIAN_FRONTEND=noninteractive apt-get -y install postfix
+error_check
 
+echo "Installing imap and pop3 dependencies"
+apt-get -y install dovecot-core dovecot-imapd dovecot-pop3d dovecot-lmtpd dovecot-pgsql postfix-pgsql libmcrypt-dev php-pgsql php-imap
+error_check
+
+
+echo "Installing mcrypt library"
+echo "This package has been removed from the official Ubuntu repositories. Installation may carry security vulnerabilities in future iterations."
+pecl channel-update pecl.php.net
+pecl install mcrypt-1.0.1
+error_check
+
+echo "Configuring php-mcrypt library"
+sed -i -e '/^\[PHP\]/a\extension=mcrypt.so' /etc/php/7.2/cli/php.ini
+sed -i -e '/^\[PHP\]/a\extension=mcrypt.so' /etc/php/7.2/apache2/php.ini
+error_check
+
+echo "Configuring default timezone"
+sed -i -e "s/^;date\.timezone \=.*$/date\.timezone \= \'America\/Los_Angeles\'/" /etc/php/7.2/cli/php.ini
+sed -i -e "s/^;date\.timezone \=.*$/date\.timezone \= \'America\/Los_Angeles\'/" /etc/php/7.2/apache2/php.ini
+error_check
+
+echo "Preparing database"
 DBPASS=$(date | md5sum | head -c 32)
 CREATEUSER="CREATE USER postfix_user WITH PASSWORD '${DBPASS}';"
 CREATEDB="CREATE DATABASE postfix_db;"
@@ -101,15 +134,15 @@ echo "#
 # service type  private unpriv  chroot  wakeup  maxproc command + args
 #               (yes)   (yes)   (yes)   (never) (100)
 # ==========================================================================
-smtp      inet  n       -       -       -       -       smtpd
+smtp       inet  n       -       -       -       -       smtpd
 #smtp      inet  n       -       -       -       1       postscreen
 #smtpd     pass  -       -       -       -       -       smtpd
 #dnsblog   unix  -       -       -       -       0       dnsblog
 #tlsproxy  unix  -       -       -       -       0       tlsproxy
-submission inet n       -       -       -       -       smtpd
+submission inet  n       -       -       -       -       smtpd
 #  -o syslog_name=postfix/submission
-  -o smtpd_tls_security_level=encrypt
-  -o smtpd_sasl_auth_enable=yes
+   -o smtpd_tls_security_level=encrypt
+   -o smtpd_sasl_auth_enable=yes
 #  -o smtpd_client_restrictions=permit_sasl_authenticated,reject
 #  -o milter_macro_daemon_name=ORIGINATING
 smtps     inet  n       -       -       -       -       smtpd
@@ -118,7 +151,7 @@ smtps     inet  n       -       -       -       -       smtpd
   -o smtpd_sasl_auth_enable=yes
 #  -o smtpd_client_restrictions=permit_sasl_authenticated,reject
 #  -o milter_macro_daemon_name=ORIGINATING
-#628       inet  n       -       -       -       -       qmqpd
+#628      inet  n       -       -       -       -       qmqpd
 pickup    fifo  n       -       -       60      1       pickup
 cleanup   unix  n       -       -       -       0       cleanup
 qmgr      fifo  n       -       n       300     1       qmgr
@@ -134,7 +167,7 @@ proxymap  unix  -       -       n       -       -       proxymap
 proxywrite unix -       -       n       -       1       proxymap
 smtp      unix  -       -       -       -       -       smtp
 relay     unix  -       -       -       -       -       smtp
-#       -o smtp_helo_timeout=5 -o smtp_connect_timeout=5
+#  -o smtp_helo_timeout=5 -o smtp_connect_timeout=5
 showq     unix  n       -       -       -       -       showq
 error     unix  -       -       -       -       -       error
 retry     unix  -       -       -       -       -       error
@@ -281,9 +314,9 @@ touch /etc/postfix/transport
 postmap /etc/postfix/transport
 error_check
 
-read -p "Enter Postfix Admin and Roundcube installation path: " DOWNPATH
-echo "Checking if path is correct:"
-cd ${DOWNPATH}
+echo "Creating temporary download folder"
+mkdir ~/fws-mail/temp
+cd ~/fws-mail/temp
 error_check
 
 echo "Downloading postfixadmin:"
@@ -291,27 +324,65 @@ wget -O postfixadmin.tar.gz http://sourceforge.net/projects/postfixadmin/files/l
 error_check
 
 echo "Unpacking postfixadmin:"
-tar xvf postfixadmin.tar.gz -C ${DOWNPATH}
+tar xvf postfixadmin.tar.gz -C ~/fws-mail/temp
 error_check
 rm -rf postfixadmin.tar.gz
-mv postfixadmin-* postfixadmin
+mv postfixadmin-* /srv/postfixadmin
+ln -s /srv/postfixadmin/public /var/www/html/postfixadmin
+error_check
+
+echo "Configuring Postfix Admin"
+touch /srv/postfixadmin/config.local.php
+echo "<?php
+$CONF['database_type'] = 'pgsql';
+$CONF['database_host'] = 'localhost';
+$CONF['database_user'] = 'postfix_user';
+$CONF['database_password'] = '${DBPASS}';
+$CONF['database_name'] = 'postfix_db';
+
+$CONF['configured'] = true;
+?>" > /srv/postfixadmin/config.local.php
+error_check
 
 echo "Setting permissions:"
-chmod -R 777 postfixadmin/templates_c
+mkdir -p /srv/postfixadmin/templates_c
+chown -R www-data:www-data /srv/postfixadmin/templates_c
 error_check
 
 echo "Downloading roundcube:"
-wget -O roundcube.tar.gz http://sourceforge.net/projects/roundcubemail/files/latest/download
+cd ~/fws-mail/temp
+wget --no-check-certificate https://github.com/roundcube/roundcubemail/releases/download/1.4.2/roundcubemail-1.4.2-complete.tar.gz
 error_check
 
 echo "Unpacking roundcube:"
-tar xvf roundcube.tar.gz -C ${DOWNPATH}
+tar xvf  roundcubemail-1.4.2-complete.tar.gz -C ~/fws-mail/temp
+rm -rf  roundcubemail-1.4.2-complete.tar.gz
+mv roundcubemail-* /srv/mail
+ln -s /srv/mail /var/www/html/mail
 error_check
-rm -rf roundcube.tar.gz
-mv roundcubemail-* mail
+
+cd /srv/mail
+sudo -u postgres psql -c "CREATE USER roundcube WITH PASSWORD '${DBPASS}';"
+error_check
+
+sudo -u postgres psql -c "CREATE DATABASE roundcube_db;"
+error_check
+
+sudo -u postgres psql -U root -h localhost -d roundcube < /srv/mail/SQL/postgres.initial.sql
+sudo -i -u postgres psql -c 'GRANT ALL ON ALL TABLES IN SCHEMA public TO roundcube;;'
+error_check
+
+chown -R -h www-data:www-data /var/www/html/mail/temp/
+chown -R -h www-data:www-data /var/www/html/mail/logs/
+error_check
 
 echo "Checking if php5-fpm is working:"
-service php5-fpm restart
+a2enmod proxy_fcgi setenvif
+a2enconf php7.2-fpm
+systemctl enable php7.2-fpm
+systemctl start php7.2-fpm
+systemctl reload apache2
+service php7.2-fpm restart
 error_check
 
 echo "Creating SSL certificate:"
@@ -346,3 +417,7 @@ echo "database host: localhost"
 echo "database user: postfix_user"
 echo "database pass: ${DBPASS}"
 echo "database name: postfix_db"
+
+
+echo "Enter http://yourserver.tld/postfixadmin/setup.php in a web browser to continue Postfix Admin setup."
+echo "Enter http://yourserver.tld/mail/installer in a web browser to continue Roundcube Webmail setup."
